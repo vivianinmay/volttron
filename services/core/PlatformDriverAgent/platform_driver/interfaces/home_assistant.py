@@ -28,10 +28,10 @@ from math import pi
 import json
 import sys
 from platform_driver.interfaces import BaseInterface, BaseRegister, BasicRevert
-from volttron.platform.agent import utils
+from volttron.platform.agent import utils 
 from volttron.platform.vip.agent import Agent
 import logging
-import requests
+import requests #requests 是 Python 的 HTTP 库，用于发送 HTTP 请求和处理响应。
 from requests import get
 
 _log = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ class HomeAssistantRegister(BaseRegister):
         self.entity_point = entity_point
 
 
-def _post_method(url, headers, data, operation_description):
+def _post_method(url, headers, data, operation_description):  ## send a HTTP POST request !!!
     err = None
     try:
         response = requests.post(url, headers=headers, json=data)
@@ -155,6 +155,23 @@ class Interface(BasicRevert, BaseInterface):
             else:
                 _log.info(f"Currently, input_booleans only support state")
 
+        elif "lock." in register.entity_id:
+            if entity_point == "state":
+                # Lock entities only accept 0/1 where 1=locked and 0=unlocked.
+                if register.value in [0, 1]:
+                    if register.value == 1:
+                        self.lock_device(register.entity_id)
+                    else:
+                        self.unlock_device(register.entity_id)
+                else:
+                    error_msg = f"State value for {register.entity_id} should be an integer value of 1 or 0"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                error_msg = f"Currently set_point for lock entities only supports state: {register.entity_id}"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+
         # Changing thermostat values.
         elif "climate." in register.entity_id:
             if entity_point == "state":
@@ -173,9 +190,16 @@ class Interface(BasicRevert, BaseInterface):
                     raise ValueError(error_msg)
             elif entity_point == "temperature":
                 self.set_thermostat_temperature(entity_id=register.entity_id, temperature=register.value)
+            elif entity_point == "fan_mode":
+                if isinstance(register.value, str) and register.value in ["auto", "low", "medium", "high"]:
+                    self.set_fan_mode(entity_id=register.entity_id, fan_mode=register.value)
+                else:
+                    error_msg = f"Climate fan_mode for {register.entity_id} should be one of: auto, low, medium, high"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
 
             else:
-                error_msg = f"Currently set_point is supported only for thermostats state and temperature {register.entity_id}"
+                error_msg = f"Currently set_point is supported only for thermostats state, temperature, and fan_mode {register.entity_id}"
                 _log.error(error_msg)
                 raise ValueError(error_msg)
         else:
@@ -237,7 +261,7 @@ class Interface(BasicRevert, BaseInterface):
                         register.value = attribute
                         result[register.point_name] = attribute
                 # handling light states
-                elif "light." or "input_boolean." in entity_id: # Checks for lights or input bools since they have the same states.
+                elif "light." in entity_id or "input_boolean." in entity_id: # Checks for lights or input bools since they have the same states.
                     if entity_point == "state":
                         state = entity_data.get("state", None)
                         # Converting light states to numbers.
@@ -245,6 +269,24 @@ class Interface(BasicRevert, BaseInterface):
                             register.value = 1
                             result[register.point_name] = 1
                         elif state == "off":
+                            register.value = 0
+                            result[register.point_name] = 0
+                    else:
+                        attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+                        register.value = attribute
+                        result[register.point_name] = attribute
+                elif "lock." in entity_id:
+                    if entity_point == "state":
+                        state = entity_data.get("state", None)
+                        if state == "locked":
+                            register.value = 1
+                            result[register.point_name] = 1
+                        elif state == "unlocked":
+                            register.value = 0
+                            result[register.point_name] = 0
+                        else:
+                            # Safe handling for unsupported/unknown lock states (e.g. jammed, locking, unlocking, unknown)
+                            _log.warning(f"Unsupported lock state '{state}' for {entity_id}; defaulting to 0")
                             register.value = 0
                             result[register.point_name] = 0
                     else:
@@ -358,19 +400,36 @@ class Interface(BasicRevert, BaseInterface):
             "content-type": "application/json",
         }
 
-        if self.units == "C":
+        if self.units == "C": #（Celsius）
             converted_temp = round((temperature - 32) * 5/9, 1)
             _log.info(f"Converted temperature {converted_temp}")
             data = {
                 "entity_id": entity_id,
                 "temperature": converted_temp,
             }
-        else:
+        else: #（Fahrenheit）
             data = {
                 "entity_id": entity_id,
                 "temperature": temperature,
             }
         _post_method(url, headers, data, f"set temperature of {entity_id} to {temperature}")
+
+    def set_fan_mode(self, entity_id, fan_mode):
+        # Check if the provided entity_id starts with "climate."
+        if not entity_id.startswith("climate."):
+            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
+            return
+
+        url = f"http://{self.ip_address}:{self.port}/api/services/climate/set_fan_mode"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "content-type": "application/json",
+        }
+        data = {
+            "entity_id": entity_id,
+            "fan_mode": fan_mode,
+        }
+        _post_method(url, headers, data, f"set fan mode of {entity_id} to {fan_mode}")
 
     def change_brightness(self, entity_id, value):
         url = f"http://{self.ip_address}:{self.port}/api/services/light/turn_on"
@@ -405,3 +464,29 @@ class Interface(BasicRevert, BaseInterface):
             print(f"Successfully set {entity_id} to {state}")
         else:
             print(f"Failed to set {entity_id} to {state}: {response.text}")
+
+    def lock_device(self, entity_id):
+        url = f"http://{self.ip_address}:{self.port}/api/services/lock/lock"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "entity_id": entity_id,
+        }
+        _log.debug(f"Lock request prepared for {entity_id}: url={url}, payload={payload}") #debug1
+        _post_method(url, headers, payload, f"lock {entity_id}")
+        _log.debug(f"Lock request completed for {entity_id}") # debug2
+
+    def unlock_device(self, entity_id):
+        url = f"http://{self.ip_address}:{self.port}/api/services/lock/unlock" #Home Assistant's service API
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {    # tell HA operate which entity
+            "entity_id": entity_id,
+        }
+        _log.debug(f"Unlock request prepared for {entity_id}: url={url}, payload={payload}") # debug3
+        _post_method(url, headers, payload, f"unlock {entity_id}") # send a HTTP POST request !!!
+        _log.debug(f"Unlock request completed for {entity_id}") # debug4
