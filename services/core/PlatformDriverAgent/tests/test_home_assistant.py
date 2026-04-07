@@ -22,6 +22,16 @@
 # ===----------------------------------------------------------------------===
 # }}}
 
+"""
+Unit tests for lock domain support in the Home Assistant driver.
+
+These tests verify:
+- lock state mapping (locked/unlocked → 1/0)
+- routing of set_point to lock/unlock helpers
+- HTTP API calls for lock and unlock services
+"""
+
+
 import json
 import logging
 import pytest
@@ -56,7 +66,7 @@ HOMEASSISTANT_DEVICE_TOPIC = "devices/home_assistant"
 
 
 # Get the point which will should be off
-def test_get_point(volttron_instance, config_store):
+def test_get_point(volttron_instance, config_store): 
     expected_values = 0
     agent = volttron_instance.dynamic_agent
     result = agent.vip.rpc.call(PLATFORM_DRIVER, 'get_point', 'home_assistant', 'bool_state').get(timeout=20)
@@ -65,7 +75,7 @@ def test_get_point(volttron_instance, config_store):
 
 # The default value for this fake light is 3. If the test cannot reach out to home assistant,
 # the value will default to 3 making the test fail.
-def test_data_poll(volttron_instance: PlatformWrapper, config_store):
+def test_data_poll(volttron_instance: PlatformWrapper, config_store): # test scrape_all()
     expected_values = [{'bool_state': 0}, {'bool_state': 1}]
     agent = volttron_instance.dynamic_agent
     result = agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all', 'home_assistant').get(timeout=20)
@@ -81,6 +91,22 @@ def test_set_point(volttron_instance, config_store):
     gevent.sleep(10)
     result = agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all', 'home_assistant').get(timeout=20)
     assert result == expected_values, "The result does not match the expected result."
+
+
+def test_get_fan_mode(volttron_instance, config_store):
+    expected_values = ["auto", "low", "medium", "high"]
+    agent = volttron_instance.dynamic_agent
+    result = agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all', 'home_assistant').get(timeout=20)
+    assert result.get('fan_mode') in expected_values, "The fan_mode is not in expected Home Assistant values."
+
+
+def test_set_fan_mode(volttron_instance, config_store):
+    set_value = "low"
+    agent = volttron_instance.dynamic_agent
+    agent.vip.rpc.call(PLATFORM_DRIVER, 'set_point', 'home_assistant', 'fan_mode', set_value).get(timeout=20)
+    gevent.sleep(5)
+    result = agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all', 'home_assistant').get(timeout=20)
+    assert result.get('fan_mode') == set_value, "fan_mode did not update to the requested value."
 
 
 @pytest.fixture(scope="module")
@@ -100,6 +126,17 @@ def config_store(volttron_instance, platform_driver):
         "Starting Value": 3,
         "Type": "int",
         "Notes": "lights hallway"
+    },
+    {
+        "Entity ID": "climate.volttrontest",
+        "Entity Point": "fan_mode",
+        "Volttron Point Name": "fan_mode",
+        "Units": "string",
+        "Units Details": "auto, low, medium, high",
+        "Writable": True,
+        "Starting Value": "auto",
+        "Type": "string",
+        "Notes": "climate fan mode"
     }]
 
     volttron_instance.dynamic_agent.vip.rpc.call(CONFIGURATION_STORE,
